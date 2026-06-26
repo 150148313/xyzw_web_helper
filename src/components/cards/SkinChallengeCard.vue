@@ -11,45 +11,52 @@
       <!-- Badge content moved to default slot -->
     </template>
     <template #default>
-      <div class="header-info">
-        <span class="challenge-count">今日挑战 {{ dailyFightNum }}/10</span>
-        <span class="daily-target" v-if="isActivityValid">今日可挑战 {{ todayInfo }}</span>
-        <span class="daily-target" v-else>活动已结束</span>
+      <div v-if="towerActivities.length === 0" class="no-activity">
+        暂无闯关活动
       </div>
-      
-      <div v-if="!isActivityValid" class="expired-mask">
-         当前活动已结束
-      </div>
-      <div class="boss-grid" :class="{ 'disabled': !isActivityValid }">
-        <div 
-          v-for="type in 6" 
-          :key="type"
-          class="boss-card"
-          :class="{ 
-            'active': isTowerOpen(type),
-            'cleared': isTowerCleared(type),
-            'locked': !isTowerOpen(type)
-          }"
-        >
-          <div class="boss-title">BOSS {{ type }}</div>
-          <div class="boss-level">第 {{ getTowerLevel(type) }} 层</div>
-          
-          <div class="boss-status">
-            <span v-if="isTowerCleared(type)" class="status-text cleared">已通关</span>
-            <span v-else-if="!isTowerOpen(type)" class="status-text locked">未开放</span>
-            <span v-else class="status-text active">进行中</span>
-          </div>
 
-          <button 
-            class="challenge-btn"
-            :disabled="!canChallenge(type) || isFighting"
-            @click="challengeSingle(type)"
+      <div v-for="(activity, idx) in towerActivities" :key="activity.actId" class="tower-section">
+        <div class="header-info">
+          <span class="challenge-count">活动 {{ idx + 1 }} (ID: {{ activity.actId }})</span>
+          <span class="challenge-count">今日挑战 {{ activity.dailyFightNum }}/10</span>
+          <span class="daily-target" v-if="activity.isValid">活动中</span>
+          <span class="daily-target" v-else>活动已结束</span>
+        </div>
+
+        <div v-if="!activity.isValid" class="expired-mask">
+          当前活动已结束
+        </div>
+        <div class="boss-grid" :class="{ 'disabled': !activity.isValid }">
+          <div
+            v-for="type in 6"
+            :key="type"
+            class="boss-card"
+            :class="{
+              'active': isTowerOpen(activity, type),
+              'cleared': isTowerCleared(activity, type),
+              'locked': !isTowerOpen(activity, type)
+            }"
           >
-            挑战
-          </button>
+            <div class="boss-title">BOSS {{ type }}</div>
+            <div class="boss-level">第 {{ getTowerLevel(activity, type) }} 层</div>
+
+            <div class="boss-status">
+              <span v-if="isTowerCleared(activity, type)" class="status-text cleared">已通关</span>
+              <span v-else-if="!isTowerOpen(activity, type)" class="status-text locked">未开放</span>
+              <span v-else class="status-text active">进行中</span>
+            </div>
+
+            <button
+              class="challenge-btn"
+              :disabled="!canChallenge(activity, type) || isFighting"
+              @click="challengeSingle(activity, type)"
+            >
+              挑战
+            </button>
+          </div>
         </div>
       </div>
-      
+
       <div class="action-row">
         <button
           class="action-button secondary"
@@ -73,87 +80,51 @@ const tokenStore = useTokenStore();
 const message = useMessage();
 
 const isFighting = ref(false);
-const actId = ref(null);
-const isActivityValid = computed(() => {
-  if (!actId.value) return false;
-  
-  const idStr = String(actId.value);
-  if (idStr.length < 6) return false;
-  
-  // Format: YYMMDDX -> 20YY-MM-DD
-  const year = "20" + idStr.substring(0, 2);
-  const month = idStr.substring(2, 4);
-  const day = idStr.substring(4, 6);
-  
-  const startDate = new Date(`${year}-${month}-${day}T00:00:00`);
-  const endDate = new Date(startDate);
-  endDate.setDate(startDate.getDate() + 7);
-  
-  const now = new Date();
-  return now >= startDate && now < endDate;
-});
 
-const levelRewardMap = ref({});
-const dailyFightNum = ref(0); // Mock or real data
-const finishedCount = computed(() => Object.keys(levelRewardMap.value).length);
+// 多个闯关活动
+const towerActivities = ref([]);
+// 保留当前正在挑战的活动引用
+const currentActivity = ref(null);
+
+// 用 startTime 时间戳判断活动是否有效（7天窗口）
+const checkActivityValid = (startTime) => {
+  if (!startTime) return false;
+  const endDate = startTime + 7 * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  return now >= startTime && now < endDate;
+};
 
 const statusClass = computed(() => {
-  if (finishedCount.value >= 48) return "completed";
-  return "active";
+  return towerActivities.value.length > 0 ? "active" : "completed";
 });
 
-// Calculate today's open boss
-const todayWeekDay = new Date().getDay(); // 0-6 (Sun-Sat)
-const openTowerMap = {
-  5: [1], // Friday
-  6: [2], // Saturday
-  0: [3], // Sunday
-  1: [4], // Monday
-  2: [5], // Tuesday
-  3: [6], // Wednesday
-  4: [1, 2, 3, 4, 5, 6] // Thursday (All open)
+// 用服务器返回的 fighting 字段判断 BOSS 是否可挑战
+const isTowerOpen = (activity, type) => {
+  return activity.towerDetail?.[String(type)]?.fighting === true;
 };
 
-const todayOpenTowers = computed(() => {
-  return openTowerMap[todayWeekDay] || [];
-});
-
-const todayInfo = computed(() => {
-  const weekDays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-  const dayName = weekDays[todayWeekDay];
-  const towers = todayOpenTowers.value;
-  if (towers.length === 6) return `${dayName} - 全部开放`;
-  if (towers.length > 0) return `${dayName} - BOSS ${towers.join(",")}`;
-  return `${dayName} - 无活动`;
-});
-
-const isTowerOpen = (type) => {
-  return todayOpenTowers.value.includes(type) || todayOpenTowers.value.includes(6) && todayWeekDay === 4; // Special case for Thursday if map is correct
-};
-
-const isTowerCleared = (type) => {
+const isTowerCleared = (activity, type) => {
+  const map = activity.levelRewardMap || {};
   const key1 = `${type}008`;
   const key2 = Number(key1);
-  return !!(levelRewardMap.value[key1] || levelRewardMap.value[key2]);
+  return !!(map[key1] || map[key2]);
 };
 
-const getTowerLevel = (type) => {
-  // Find highest cleared level
+const getTowerLevel = (activity, type) => {
+  const map = activity.levelRewardMap || {};
   for (let i = 8; i >= 1; i--) {
     const key1 = `${type}00${i}`;
     const key2 = Number(key1);
-    if (levelRewardMap.value[key1] || levelRewardMap.value[key2]) {
-        // If 8 is cleared, return 8
+    if (map[key1] || map[key2]) {
         if (i === 8) return 8;
-        // Else return next level
         return i + 1;
     }
   }
   return 1;
 };
 
-const canChallenge = (type) => {
-  return isActivityValid.value && isTowerOpen(type) && !isTowerCleared(type);
+const canChallenge = (activity, type) => {
+  return activity.isValid && isTowerOpen(activity, type) && !isTowerCleared(activity, type);
 };
 
 const getInfo = async () => {
@@ -162,29 +133,38 @@ const getInfo = async () => {
   if (tokenStore.getWebSocketStatus(tokenId) !== "connected") return;
 
   try {
-    const res = await tokenStore.sendMessageWithPromise(tokenId, "towers_getinfo", {}, 5000);
-    if (res) {
-      // Handle nested data structure if necessary
-      const data = res.actId ? res : (res.towerData && res.towerData.actId ? res.towerData : res);
-      
-      actId.value = data.actId;
-      levelRewardMap.value = data.levelRewardMap || {};
-      
-      console.log('SkinChallenge Info:', {
-         actId: data.actId,
-         mapSize: Object.keys(levelRewardMap.value).length,
-         keys: Object.keys(levelRewardMap.value).slice(0, 10),
-         map: levelRewardMap.value,
-         rawRes: res
-      });
+    const actIdList = tokenStore.getMultiTowerActIds();
+    if (actIdList.length === 0) {
+      towerActivities.value = [];
+      return;
+    }
 
-      // Try to find daily num if exists in response
-      if (data.todayUseTickCnt !== undefined) {
-        dailyFightNum.value = data.todayUseTickCnt;
+    const activities = [];
+    for (const { actId, startTime } of actIdList) {
+      try {
+        const res = await tokenStore.sendMessageWithPromise(tokenId, "towers_getinfo", { actId }, 5000);
+        if (res) {
+          const data = res.towerData || res;
+          activities.push({
+            actId: data.actId || actId,
+            startTime,
+            towerDetail: data.towerData || {},
+            levelRewardMap: data.levelRewardMap || {},
+            dailyFightNum: data.todayUseTickCnt || 0,
+            isValid: checkActivityValid(startTime),
+          });
+        }
+      } catch (e) {
+        console.warn(`获取闯关活动 ${actId} 信息失败:`, e.message);
       }
     }
+
+    towerActivities.value = activities;
+    currentActivity.value = activities.find(a => a.isValid) || activities[0] || null;
+
+    console.log('SkinChallenge Info:', activities);
   } catch (e) {
-    // console.error(e);
+    console.error(e);
   }
 };
 
@@ -195,53 +175,52 @@ const refreshInfo = async () => {
   isFighting.value = false;
 };
 
-const challengeSingle = async (type) => {
+const challengeSingle = async (activity, type) => {
   if (isFighting.value) return;
-  
+
   isFighting.value = true;
+  currentActivity.value = activity;
   const tokenId = tokenStore.selectedToken.id;
-  
+  const actId = activity.actId;
+
   try {
-     message.info(`开始挑战 BOSS ${type}`);
-     
+     message.info(`开始挑战 BOSS ${type} (活动 ${actId})`);
+
      let needStart = true;
      let loop = true;
      let failCount = 0;
-     
+
      while (loop) {
         if (needStart) {
-            await tokenStore.sendMessageWithPromise(tokenId, "towers_start", { towerType: type }, 5000);
+            await tokenStore.sendMessageWithPromise(tokenId, "towers_start", { actId, towerType: type }, 5000);
         }
-        
-        const fightRes = await tokenStore.sendMessageWithPromise(tokenId, "towers_fight", { towerType: type }, 5000);
+
+        const fightRes = await tokenStore.sendMessageWithPromise(tokenId, "towers_fight", { actId, towerType: type }, 5000);
         const battleData = fightRes?.battleData;
         const curHP = battleData?.result?.accept?.ext?.curHP;
-        
+
         if (curHP === 0) {
-            // Get current level before updating info (it will be the level just cleared)
-            const currentLevel = getTowerLevel(type);
+            const currentLevel = getTowerLevel(activity, type);
             message.success(`BOSS ${type} 第 ${currentLevel} 层挑战成功`);
-            
-            // 挑战成功，不需要重新 start，直接继续 fight
+
             needStart = false;
             failCount = 0;
-            
-            // 检查是否通关（需要更新 levelRewardMap）
+
             await getInfo();
-            if (isTowerCleared(type)) {
+            // 重新获取当前活动数据
+            const updated = towerActivities.value.find(a => a.actId === actId);
+            if (updated && isTowerCleared(updated, type)) {
                 loop = false;
                 message.success(`BOSS ${type} 已全部通关`);
             } else {
-                // 等待一下避免过快请求
                 await new Promise(r => setTimeout(r, 1000));
             }
         } else {
-            const currentLevel = getTowerLevel(type);
+            const currentLevel = getTowerLevel(activity, type);
             message.warning(`BOSS ${type} 第 ${currentLevel} 层挑战失败`);
-            // 挑战失败，需要重新 start
             needStart = true;
             failCount++;
-            
+
             if (failCount >= 3) {
                 message.error(`BOSS ${type} 第 ${currentLevel} 层连续失败 3 次，停止挑战`);
                 loop = false;
@@ -279,6 +258,24 @@ watch(
 </script>
 
 <style scoped lang="scss">
+.no-activity {
+  text-align: center;
+  padding: var(--spacing-lg);
+  color: var(--text-secondary);
+}
+
+.tower-section {
+  margin-bottom: var(--spacing-lg);
+  padding-bottom: var(--spacing-md);
+  border-bottom: 1px dashed var(--border-color);
+
+  &:last-child {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
+  }
+}
+
 .header-info {
   display: flex;
   gap: var(--spacing-md);

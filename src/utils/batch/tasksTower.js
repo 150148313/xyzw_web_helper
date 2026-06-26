@@ -647,61 +647,48 @@ export function createTasksTower(deps) {
 
         await ensureConnection(tokenId);
 
-        // 获取活动信息
-        let res = await tokenStore.sendMessageWithPromise(
-          tokenId,
-          "towers_getinfo",
-          {},
-          5000
-        );
-        
-        let towerData = res.actId ? res : (res.towerData && res.towerData.actId ? res.towerData : res);
-
-        // 检查活动是否有效
-        if (!towerData.actId) {
-           addLog({
+        // 获取活动信息 - 从 roleInfo 中获取 actId 列表
+        const actIdList = tokenStore.getMultiTowerActIds();
+        if (actIdList.length === 0) {
+          addLog({
             time: new Date().toLocaleTimeString(),
-            message: `${token.name} 换皮闯关活动信息获取失败`,
+            message: `${token.name} 无可用闯关活动`,
             type: "warning",
           });
           tokenStatus.value[tokenId] = "failed";
           return;
         }
 
-        const actId = String(towerData.actId);
-        if (actId.length >= 6) {
-           const year = "20" + actId.substring(0, 2);
-           const month = actId.substring(2, 4);
-           const day = actId.substring(4, 6);
-           const startDate = new Date(`${year}-${month}-${day}T00:00:00`);
-           const endDate = new Date(startDate);
-           endDate.setDate(startDate.getDate() + 7);
-           const now = new Date();
-           if (now < startDate || now >= endDate) {
-              addLog({
-                time: new Date().toLocaleTimeString(),
-                message: `${token.name} 换皮闯关活动已结束`,
-                type: "warning",
-              });
-              tokenStatus.value[tokenId] = "completed";
-              return;
-           }
+        // 遍历所有活动，处理第一个有效的
+        let towerData = null;
+        let currentStartTime = null;
+        for (const { actId: id, startTime } of actIdList) {
+          // 用 startTime 判断活动是否有效（7天窗口）
+          const endTime = startTime + 7 * 24 * 60 * 60 * 1000;
+          if (Date.now() < startTime || Date.now() >= endTime) continue;
+
+          const res = await tokenStore.sendMessageWithPromise(tokenId, "towers_getinfo", { actId: id }, 5000);
+          const data = res.towerData || res;
+          if (data.actId) {
+            towerData = data;
+            currentStartTime = startTime;
+            break;
+          }
         }
 
+        if (!towerData) {
+           addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${token.name} 无有效闯关活动`,
+            type: "warning",
+          });
+          tokenStatus.value[tokenId] = "completed";
+          return;
+        }
+
+        const actId = towerData.actId;
         let levelRewardMap = towerData.levelRewardMap || {};
-        
-        // 计算今日开放的BOSS
-        const todayWeekDay = new Date().getDay(); // 0-6 (Sun-Sat)
-        const openTowerMap = {
-          5: [1], // Friday
-          6: [2], // Saturday
-          0: [3], // Sunday
-          1: [4], // Monday
-          2: [5], // Tuesday
-          3: [6], // Wednesday
-          4: [1, 2, 3, 4, 5, 6] // Thursday (All open)
-        };
-        const todayOpenTowers = openTowerMap[todayWeekDay] || [];
+        const towerDetail = towerData.towerData || {};
 
         // 辅助函数：判断是否已通关
         const isTowerCleared = (type, map) => {
@@ -709,7 +696,7 @@ export function createTasksTower(deps) {
           const key2 = Number(key1);
           return !!(map[key1] || map[key2]);
         };
-        
+
         // 辅助函数：获取当前层数
         const getTowerLevel = (type, map) => {
            for (let i = 8; i >= 1; i--) {
@@ -723,22 +710,17 @@ export function createTasksTower(deps) {
           return 1;
         };
 
-        // 筛选未通关的BOSS
-        const targetTowers = todayOpenTowers.filter(type => !isTowerCleared(type, levelRewardMap));
+        // 用服务器返回的 fighting 字段筛选可挑战的BOSS
+        const targetTowers = [1, 2, 3, 4, 5, 6].filter(type => {
+          const fighting = towerDetail[String(type)]?.fighting === true;
+          return fighting && !isTowerCleared(type, levelRewardMap);
+        });
 
-        if (todayWeekDay === 4) {
-             addLog({
-                time: new Date().toLocaleTimeString(),
-                message: `${token.name} 周四全开放，检测到需补打BOSS: ${targetTowers.length > 0 ? targetTowers.join(', ') : '无'}`,
-                type: "info",
-             });
-        } else if (targetTowers.length === 0 && todayOpenTowers.length > 0) {
-             addLog({
-                time: new Date().toLocaleTimeString(),
-                message: `${token.name} 今日BOSS ${todayOpenTowers[0]} 已通关`,
-                type: "info",
-             });
-        }
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${token.name} 闯关活动 ${actId}，可挑战BOSS: ${targetTowers.length > 0 ? targetTowers.join(', ') : '无'}`,
+          type: "info",
+        });
 
         if (targetTowers.length === 0) {
              tokenStatus.value[tokenId] = "completed";
@@ -765,12 +747,12 @@ export function createTasksTower(deps) {
 
             while (loop && !shouldStop.value) {
                 if (needStart) {
-                    await tokenStore.sendMessageWithPromise(tokenId, "towers_start", { towerType: type }, 5000);
+                    await tokenStore.sendMessageWithPromise(tokenId, "towers_start", { actId: towerData.actId, towerType: type }, 5000);
                     // 稍微等待一下
                     await new Promise(r => setTimeout(r, 500));
                 }
 
-                const fightRes = await tokenStore.sendMessageWithPromise(tokenId, "towers_fight", { towerType: type }, 5000);
+                const fightRes = await tokenStore.sendMessageWithPromise(tokenId, "towers_fight", { actId: towerData.actId, towerType: type }, 5000);
                 const battleData = fightRes?.battleData;
                 const curHP = battleData?.result?.accept?.ext?.curHP;
                 
@@ -787,9 +769,9 @@ export function createTasksTower(deps) {
                      failCount = 0;
 
                      // 刷新数据
-                     res = await tokenStore.sendMessageWithPromise(tokenId, "towers_getinfo", {}, 5000);
-                     towerData = res.actId ? res : (res.towerData && res.towerData.actId ? res.towerData : res);
-                     levelRewardMap = towerData.levelRewardMap || {};
+                     res = await tokenStore.sendMessageWithPromise(tokenId, "towers_getinfo", { actId: towerData.actId }, 5000);
+                     const refreshData = res.towerData || res;
+                     levelRewardMap = refreshData.levelRewardMap || {};
 
                      if (isTowerCleared(type, levelRewardMap)) {
                         loop = false;

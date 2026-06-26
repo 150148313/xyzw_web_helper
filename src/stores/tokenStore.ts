@@ -1152,6 +1152,34 @@ export const useTokenStore = defineStore("tokens", () => {
     }
   };
 
+  // 获取换皮闯关 actId 列表（从 roleInfo.role.custom 中提取）
+  // 返回 [{ actId: 2505231, startTime: 1782403200000 }, ...]
+  const getMultiTowerActIds = (): { actId: number; startTime: number }[] => {
+    try {
+      const roleInfo = gameData.value.roleInfo;
+      if (!roleInfo) return [];
+
+      const custom = roleInfo.role?.custom;
+      if (!custom) return [];
+
+      // 查找所有 act:multiTower:2:XXXXXXX 格式的 key，value 是活动开始时间戳(ms)
+      const actIds: { actId: number; startTime: number }[] = [];
+      for (const [key, value] of Object.entries(custom)) {
+        const match = key.match(/^act:multiTower:\d+:(\d+)$/);
+        if (match?.[1]) {
+          actIds.push({
+            actId: parseInt(match[1], 10),
+            startTime: Number(value),
+          });
+        }
+      }
+      return actIds;
+    } catch (error) {
+      gameLogger.error("获取 multiTower actId 失败:", error);
+      return [];
+    }
+  };
+
   // 工具方法
   const exportTokens = () => {
     return {
@@ -1609,6 +1637,7 @@ export const useTokenStore = defineStore("tokens", () => {
     // 塔信息方法
     getCurrentTowerLevel,
     getTowerInfo,
+    getMultiTowerActIds,
 
     // battleVersion
     setBattleVersion,
