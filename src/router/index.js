@@ -100,6 +100,15 @@ const my_routes = [
           requiresToken: true
         }
       },
+      {
+        path: 'PushingLevels',
+        name: 'PushingLevels',
+        component: () => import('@/views/PushingLevels.vue'),
+        meta: {
+          title: '主线推关',
+          requiresToken: true
+        }
+      },
       // 增加自动路由引用
       ...generatedRoutes,
     ]
