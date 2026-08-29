@@ -844,8 +844,7 @@ export function createTasksTower(deps) {
           type: "info",
         });
         let claimCount = 0;
-        for (const { actId: id } of actIdList) {
-          const claimActId = id % 10 === 1 ? id + 1 : id;
+        const claimActId = Number(actId) % 10 === 1 ? Number(actId) + 1 : Number(actId);
           try {
             while (!shouldStop.value) {
               await tokenStore.sendMessageWithPromise(
@@ -869,7 +868,6 @@ export function createTasksTower(deps) {
               type: claimCount > 0 ? "success" : "info",
             });
           }
-        }
         if (claimCount > 0) {
           addLog({
             time: new Date().toLocaleTimeString(),
