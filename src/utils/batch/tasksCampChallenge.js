@@ -72,8 +72,12 @@ export function createTasksCampChallenge(deps) {
         // 解析阵容数据，优先使用竞技场阵容
         const tokenSettings = loadSettings ? loadSettings(tokenId) : {};
         const formationId = String(tokenSettings?.arenaFormation || 1);
-        const root = presetTeamResult?.presetTeamInfo?.presetTeamInfo || presetTeamResult?.presetTeamInfo || {};
-        const teamInfoData = root[formationId]?.teamInfo || root["1"]?.teamInfo || {};
+        const root =
+          presetTeamResult?.presetTeamInfo?.presetTeamInfo ||
+          presetTeamResult?.presetTeamInfo ||
+          {};
+        const teamInfoData =
+          root[formationId]?.teamInfo || root["1"]?.teamInfo || {};
 
         const battleTeam = {};
         for (const [pos, hero] of Object.entries(teamInfoData)) {
@@ -296,116 +300,120 @@ export function createTasksCampChallenge(deps) {
       tokenStatus.value[id] = "waiting";
     });
 
-    const taskPromises = selectedTokens.value.map(async (tokenId) => {
-      if (shouldStop.value) return;
-      tokenStatus.value[tokenId] = "running";
-      const token = tokens.value.find((t) => t.id === tokenId);
-      try {
-        addLog({
-          time: new Date().toLocaleTimeString(),
-          message: `=== 开始营地挑战宠物: ${token.name} ===`,
-          type: "info",
-        });
-        await ensureConnection(tokenId);
+    const maxRounds = 3;
+    for (let round = 1; round <= maxRounds; round++) {
+      if (shouldStop.value) break;
+
+      const taskPromises = selectedTokens.value.map(async (tokenId) => {
         if (shouldStop.value) return;
+        tokenStatus.value[tokenId] = "running";
+        const token = tokens.value.find((t) => t.id === tokenId);
+        try {
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `=== 营地挑战宠物 ${token.name} (第${round}/${maxRounds}轮) ===`,
+            type: "info",
+          });
+          await ensureConnection(tokenId);
+          if (shouldStop.value) return;
 
-        // 获取我方阵容配置
-        const [presetTeamResult, roleInfoResult] = await Promise.all([
-          tokenStore.sendMessageWithPromise(
-            tokenId,
-            "presetteam_getinfo",
-            {},
-            5000,
-          ),
-          tokenStore.sendMessageWithPromise(
-            tokenId,
-            "role_getroleinfo",
-            {},
-            15000,
-          ),
-        ]);
+          // 获取我方阵容配置
+          const [presetTeamResult, roleInfoResult] = await Promise.all([
+            tokenStore.sendMessageWithPromise(
+              tokenId,
+              "presetteam_getinfo",
+              {},
+              5000,
+            ),
+            tokenStore.sendMessageWithPromise(
+              tokenId,
+              "role_getroleinfo",
+              {},
+              15000,
+            ),
+          ]);
 
-        const lordWeaponId = roleInfoResult?.role?.lordWeaponId || 0;
+          const lordWeaponId = roleInfoResult?.role?.lordWeaponId || 0;
 
-        // 解析阵容数据，优先使用竞技场阵容
-        const tokenSettings = loadSettings ? loadSettings(tokenId) : {};
-        const formationId = String(tokenSettings?.arenaFormation || 1);
-        const root = presetTeamResult?.presetTeamInfo?.presetTeamInfo || presetTeamResult?.presetTeamInfo || {};
-        const teamInfoData = root[formationId]?.teamInfo || root["1"]?.teamInfo || {};
+          // 解析阵容数据，优先使用竞技场阵容
+          const tokenSettings = loadSettings ? loadSettings(tokenId) : {};
+          const formationId = String(tokenSettings?.arenaFormation || 1);
+          const root =
+            presetTeamResult?.presetTeamInfo?.presetTeamInfo ||
+            presetTeamResult?.presetTeamInfo ||
+            {};
+          const teamInfoData =
+            root[formationId]?.teamInfo || root["1"]?.teamInfo || {};
 
-        const battleTeam = {};
-        for (const [pos, hero] of Object.entries(teamInfoData)) {
-          const hid = hero?.heroId ?? hero?.id;
-          if (hid) {
-            battleTeam[pos] = Number(hid);
+          const battleTeam = {};
+          for (const [pos, hero] of Object.entries(teamInfoData)) {
+            const hid = hero?.heroId ?? hero?.id;
+            if (hid) {
+              battleTeam[pos] = Number(hid);
+            }
           }
+
+          if (Object.keys(battleTeam).length === 0) {
+            throw new Error(`无法获取阵容${formationId}数据`);
+          }
+
+          const teamSetParams = {
+            lordWeaponId,
+            petUId: "",
+            battleTeam,
+          };
+
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${token.name} 使用阵容${formationId}: ${Object.values(battleTeam).join(", ")}`,
+            type: "info",
+          });
+
+          // 挑战宠物
+          const attackRes = await tokenStore.sendMessageWithPromise(
+            tokenId,
+            "club_attackmonster",
+            {
+              useItem: false,
+              teamSetParams,
+            },
+            8000,
+          );
+
+          const battleResult =
+            attackRes?.battleData?.result?.accept?.ext?.curHP;
+          const isWin = battleResult === 0;
+          const rewardCount = attackRes?.reward?.length || 0;
+
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${token.name} 挑战宠物${isWin ? "胜利" : "失败"}${rewardCount > 0 ? ` (获得${rewardCount}个奖励)` : ""}`,
+            type: isWin ? "success" : "error",
+          });
+
+          tokenStatus.value[tokenId] = "completed";
+        } catch (error) {
+          console.error(error);
+          tokenStatus.value[tokenId] = "failed";
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${token.name} 营地挑战宠物失败: ${error.message || "未知错误"}`,
+            type: "error",
+          });
+        } finally {
+          tokenStore.closeWebSocketConnection(tokenId);
+          releaseConnectionSlot();
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${token.name} 连接已关闭`,
+            type: "info",
+          });
         }
+      });
 
-        if (Object.keys(battleTeam).length === 0) {
-          throw new Error(`无法获取阵容${formationId}数据`);
-        }
+      await Promise.all(taskPromises);
+    }
 
-        const teamSetParams = {
-          lordWeaponId,
-          petUId: "",
-          battleTeam,
-        };
-
-        addLog({
-          time: new Date().toLocaleTimeString(),
-          message: `${token.name} 使用阵容${formationId}: ${Object.values(battleTeam).join(", ")}`,
-          type: "info",
-        });
-
-        // 挑战宠物
-        addLog({
-          time: new Date().toLocaleTimeString(),
-          message: `${token.name} 开始挑战营地宠物`,
-          type: "info",
-        });
-
-        const attackRes = await tokenStore.sendMessageWithPromise(
-          tokenId,
-          "club_attackmonster",
-          {
-            useItem: false,
-            teamSetParams,
-          },
-          8000,
-        );
-
-        const battleResult =
-          attackRes?.battleData?.result?.accept?.ext?.curHP;
-        const isWin = battleResult === 0;
-        const rewardCount = attackRes?.reward?.length || 0;
-
-        addLog({
-          time: new Date().toLocaleTimeString(),
-          message: `${token.name} 挑战宠物${isWin ? "胜利" : "失败"}${rewardCount > 0 ? ` (获得${rewardCount}个奖励)` : ""}`,
-          type: isWin ? "success" : "error",
-        });
-
-        tokenStatus.value[tokenId] = "completed";
-      } catch (error) {
-        console.error(error);
-        tokenStatus.value[tokenId] = "failed";
-        addLog({
-          time: new Date().toLocaleTimeString(),
-          message: `${token.name} 营地挑战宠物失败: ${error.message || "未知错误"}`,
-          type: "error",
-        });
-      } finally {
-        tokenStore.closeWebSocketConnection(tokenId);
-        releaseConnectionSlot();
-        addLog({
-          time: new Date().toLocaleTimeString(),
-          message: `${token.name} 连接已关闭`,
-          type: "info",
-        });
-      }
-    });
-
-    await Promise.all(taskPromises);
     isRunning.value = false;
     currentRunningTokenId.value = null;
     message.success("批量营地挑战宠物结束");
@@ -444,45 +452,13 @@ export function createTasksCampChallenge(deps) {
 
         const roleInfoResult = await tokenStore.sendMessageWithPromise(
           tokenId,
-          "role_getroleinfo",
+          "club_getinfo",
           {},
           15000,
         );
 
-        const siege = roleInfoResult?.siege || {};
-        const taskProgress = siege.taskProgress || {};
-        const taskClaimedMap = siege.taskClaimedMap || {};
-
-        // 可领取的 confId 列表
-        // confId 与 taskClaimedMap key 的映射: 1→3, 2→2, 3→1, 4→4
-        const claimedKeyMap = { 1: "3", 2: "2", 3: "1", 4: "4" };
-        const claimableIds = [];
-        // 1/2/3 区域: taskProgress 值为 1 表示可领取
-        for (const id of [1, 2, 3]) {
-          if (taskProgress[String(id)] === 1 && !taskClaimedMap[claimedKeyMap[id]]) {
-            claimableIds.push(id);
-          }
-        }
-        // 4 挑战3次: taskProgress 值 >= 3 表示可领取
-        if (
-          (taskProgress["4"] || 0) >= 3 &&
-          !taskClaimedMap[claimedKeyMap[4]]
-        ) {
-          claimableIds.push(4);
-        }
-
-        if (claimableIds.length === 0) {
-          addLog({
-            time: new Date().toLocaleTimeString(),
-            message: `${token.name} 没有可领取的营地任务奖励`,
-            type: "warning",
-          });
-          tokenStatus.value[tokenId] = "completed";
-          return;
-        }
-
         let claimedCount = 0;
-        for (const confId of claimableIds) {
+        for (const confId of [1, 2, 3, 4]) {
           if (shouldStop.value) break;
           try {
             await tokenStore.sendMessageWithPromise(
